@@ -1,0 +1,6 @@
+{
+  "name": "HarnessMap Pro",
+  "description": "Industrial wiring harness designer with ISO relays, fuse blocks, Faston crimping matrix, real-time AWG safety validation, and 3D procedural inspection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
