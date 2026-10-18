@@ -122,11 +122,8 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     if (onApplySolution) {
       onApplySolution(violation, solution);
     } else {
-      let updatedWires = [...wires];
-      let updatedNodes = [...nodes];
-
       if (violation.wireId) {
-        updatedWires = updatedWires.map((w) => {
+        const updatedWires = wires.map((w) => {
           if (w.id === violation.wireId) {
             const next = { ...w };
             if (solution.newAwg !== undefined) next.gaugeAwg = solution.newAwg;
@@ -136,59 +133,15 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
             }
             if (solution.newFuseAmps !== undefined) next.fuseRatingA = solution.newFuseAmps;
             if (solution.newExpectedCurrent !== undefined) next.expectedCurrentAmps = solution.newExpectedCurrent;
-            if (solution.newTerminationResistor !== undefined) next.terminationResistor = solution.newTerminationResistor;
-            if (solution.newTwistedPairId !== undefined) next.twistedPairId = solution.newTwistedPairId;
-            if (solution.newPin !== undefined) {
-              if (next.fromNodeId === violation.nodeId) next.fromPin = solution.newPin;
-              else next.toPin = solution.newPin;
-            }
             return next;
           }
           return w;
         });
-      }
-
-      if (solution.actionType === 'configure_termination' && solution.newTerminationResistor) {
-        const busName = violation.id.replace('can-term-zero-', '').replace('can-term-one-', '').replace('can-term-excess-', '');
-        const busWires = updatedWires.filter((w) => w.networkBus === busName);
-        if (busWires.length >= 2) {
-          const firstWireId = busWires[0].id;
-          const lastWireId = busWires[busWires.length - 1].id;
-          updatedWires = updatedWires.map((w) => {
-            if (w.id === firstWireId || w.id === lastWireId) {
-              return { ...w, terminationResistor: solution.newTerminationResistor! };
-            }
-            return w;
-          });
-        }
-      }
-
-      if (solution.actionType === 'add_ground' && solution.newWire) {
-        const gndWire: WireConnection = {
-          id: `w-gnd-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          wireNumber: `W-GND-${updatedWires.length + 1}`,
-          fromNodeId: solution.newWire.fromNodeId || 'Chassis_Ground_Point_1',
-          fromPin: solution.newWire.fromPin || 'GND-01',
-          toNodeId: solution.newWire.toNodeId || violation.nodeId || '',
-          toPin: solution.newWire.toPin || 'GND-01',
-          gaugeAwg: solution.newWire.gaugeAwg || 14,
-          color: '#000000',
-          colorName: 'Black',
-          lengthMm: 1200,
-          fromTerminalId: 'RING-M8-OB',
-          toTerminalId: 'FAST-63-OB-14-18',
-          expectedCurrentAmps: solution.newWire.expectedCurrentAmps || 10,
-          signalName: 'GND_RETURN',
-          signalType: 'Ground',
-          networkBus: 'GROUND_CHASSIS',
-          subsystem: 'נקודות הארקת שלדה (Ground Chassis)',
-          notes: 'Dedicated ground return lead for safe circuit operation',
-        };
-        updatedWires.push(gndWire);
+        onUpdateWires(updatedWires);
       }
 
       if (violation.nodeId) {
-        updatedNodes = updatedNodes.map((n) => {
+        const updatedNodes = nodes.map((n) => {
           if (n.id === violation.nodeId) {
             const next = { ...n };
             if (solution.newFuseAmps !== undefined) {
@@ -199,10 +152,8 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
           }
           return n;
         });
+        onUpdateNodes(updatedNodes);
       }
-
-      onUpdateWires(updatedWires);
-      onUpdateNodes(updatedNodes);
     }
 
     setLastFixedViolationId(violation.id);
