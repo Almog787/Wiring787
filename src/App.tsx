@@ -13,6 +13,7 @@ import {
   CircuitNode,
   WireConnection,
   SafetyCheckViolation,
+  SafetySolution,
   BOMItem,
 } from './types/harness';
 import { runSafetyChecks, generateBOM } from './utils/safetyEngine';
@@ -81,41 +82,101 @@ export default function App() {
   };
 
   // 1-Click Apply Solution from Violation Card
-  const handleApplySolution = (violation: SafetyCheckViolation, solution: any) => {
+  const handleApplySolution = (violation: SafetyCheckViolation, solution: SafetySolution) => {
+    let currentWires = [...wires];
+    let currentNodes = [...nodes];
+
     if (violation.wireId) {
-      setWires((prevWires) =>
-        prevWires.map((w) => {
-          if (w.id === violation.wireId) {
-            const updated = { ...w };
-            if (solution.newAwg !== undefined) updated.gaugeAwg = solution.newAwg;
-            if (solution.newTerminalId) {
-              updated.fromTerminalId = solution.newTerminalId;
-              updated.toTerminalId = solution.newTerminalId;
-            }
-            if (solution.newFuseAmps !== undefined) updated.fuseRatingA = solution.newFuseAmps;
-            if (solution.newExpectedCurrent !== undefined) updated.expectedCurrentAmps = solution.newExpectedCurrent;
-            return updated;
+      currentWires = currentWires.map((w) => {
+        if (w.id === violation.wireId) {
+          const updated = { ...w };
+          if (solution.newAwg !== undefined) updated.gaugeAwg = solution.newAwg;
+          if (solution.newTerminalId) {
+            updated.fromTerminalId = solution.newTerminalId;
+            updated.toTerminalId = solution.newTerminalId;
           }
-          return w;
-        })
-      );
+          if (solution.newFuseAmps !== undefined) updated.fuseRatingA = solution.newFuseAmps;
+          if (solution.newExpectedCurrent !== undefined) updated.expectedCurrentAmps = solution.newExpectedCurrent;
+          if (solution.newTerminationResistor !== undefined) updated.terminationResistor = solution.newTerminationResistor;
+          if (solution.newTwistedPairId !== undefined) updated.twistedPairId = solution.newTwistedPairId;
+          if (solution.newPin !== undefined) {
+            if (updated.fromNodeId === violation.nodeId) updated.fromPin = solution.newPin;
+            else updated.toPin = solution.newPin;
+          }
+          return updated;
+        }
+        return w;
+      });
+    }
+
+    // If solution is for a CAN bus termination (where violation might not target a single wireId)
+    if (solution.actionType === 'configure_termination' && solution.newTerminationResistor) {
+      const busName = violation.id.replace('can-term-zero-', '').replace('can-term-one-', '').replace('can-term-excess-', '');
+      const busWires = currentWires.filter((w) => w.networkBus === busName);
+      if (busWires.length >= 2) {
+        if (solution.newTerminationResistor === 'NONE') {
+          // Remove from intermediate wires
+          currentWires = currentWires.map((w) => {
+            if (w.networkBus === busName) {
+              return { ...w, terminationResistor: 'NONE' };
+            }
+            return w;
+          });
+        } else {
+          // Set on first and last wire
+          const firstWireId = busWires[0].id;
+          const lastWireId = busWires[busWires.length - 1].id;
+          currentWires = currentWires.map((w) => {
+            if (w.id === firstWireId || w.id === lastWireId) {
+              return { ...w, terminationResistor: solution.newTerminationResistor! };
+            }
+            return w;
+          });
+        }
+      }
+    }
+
+    // If solution adds a ground wire
+    if (solution.actionType === 'add_ground' && solution.newWire) {
+      const gndWire: WireConnection = {
+        id: `w-gnd-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        wireNumber: `W-GND-${currentWires.length + 1}`,
+        fromNodeId: solution.newWire.fromNodeId || 'Chassis_Ground_Point_1',
+        fromPin: solution.newWire.fromPin || 'GND-01',
+        toNodeId: solution.newWire.toNodeId || violation.nodeId || '',
+        toPin: solution.newWire.toPin || 'GND-01',
+        gaugeAwg: solution.newWire.gaugeAwg || 14,
+        color: '#000000',
+        colorName: 'Black',
+        lengthMm: 1200,
+        fromTerminalId: 'RING-M8-OB',
+        toTerminalId: 'FAST-63-OB-14-18',
+        expectedCurrentAmps: solution.newWire.expectedCurrentAmps || 10,
+        signalName: 'GND_RETURN',
+        signalType: 'Ground',
+        networkBus: 'GROUND_CHASSIS',
+        subsystem: 'נקודות הארקת שלדה (Ground Chassis)',
+        notes: 'Dedicated ground return lead for safe circuit operation',
+      };
+      currentWires.push(gndWire);
     }
 
     if (violation.nodeId) {
-      setNodes((prevNodes) =>
-        prevNodes.map((n) => {
-          if (n.id === violation.nodeId) {
-            const updated = { ...n };
-            if (solution.newFuseAmps !== undefined) {
-              updated.fuseRatingAmps = solution.newFuseAmps;
-              updated.ratingAmps = solution.newFuseAmps;
-            }
-            return updated;
+      currentNodes = currentNodes.map((n) => {
+        if (n.id === violation.nodeId) {
+          const updated = { ...n };
+          if (solution.newFuseAmps !== undefined) {
+            updated.fuseRatingAmps = solution.newFuseAmps;
+            updated.ratingAmps = solution.newFuseAmps;
           }
-          return n;
-        })
-      );
+          return updated;
+        }
+        return n;
+      });
     }
+
+    setWires(currentWires);
+    setNodes(currentNodes);
   };
 
   // Batch Auto-Fix All Violations
@@ -138,10 +199,55 @@ export default function App() {
             }
             if (sol.newFuseAmps !== undefined) updated.fuseRatingA = sol.newFuseAmps;
             if (sol.newExpectedCurrent !== undefined) updated.expectedCurrentAmps = sol.newExpectedCurrent;
+            if (sol.newTerminationResistor !== undefined) updated.terminationResistor = sol.newTerminationResistor;
+            if (sol.newTwistedPairId !== undefined) updated.twistedPairId = sol.newTwistedPairId;
+            if (sol.newPin !== undefined) {
+              if (updated.fromNodeId === v.nodeId) updated.fromPin = sol.newPin;
+              else updated.toPin = sol.newPin;
+            }
             return updated;
           }
           return w;
         });
+      }
+
+      if (sol.actionType === 'configure_termination' && sol.newTerminationResistor) {
+        const busName = v.id.replace('can-term-zero-', '').replace('can-term-one-', '').replace('can-term-excess-', '');
+        const busWires = currentWires.filter((w) => w.networkBus === busName);
+        if (busWires.length >= 2) {
+          const firstWireId = busWires[0].id;
+          const lastWireId = busWires[busWires.length - 1].id;
+          currentWires = currentWires.map((w) => {
+            if (w.id === firstWireId || w.id === lastWireId) {
+              return { ...w, terminationResistor: sol.newTerminationResistor! };
+            }
+            return w;
+          });
+        }
+      }
+
+      if (sol.actionType === 'add_ground' && sol.newWire) {
+        const gndWire: WireConnection = {
+          id: `w-gnd-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          wireNumber: `W-GND-${currentWires.length + 1}`,
+          fromNodeId: sol.newWire.fromNodeId || 'Chassis_Ground_Point_1',
+          fromPin: sol.newWire.fromPin || 'GND-01',
+          toNodeId: sol.newWire.toNodeId || v.nodeId || '',
+          toPin: sol.newWire.toPin || 'GND-01',
+          gaugeAwg: sol.newWire.gaugeAwg || 14,
+          color: '#000000',
+          colorName: 'Black',
+          lengthMm: 1200,
+          fromTerminalId: 'RING-M8-OB',
+          toTerminalId: 'FAST-63-OB-14-18',
+          expectedCurrentAmps: sol.newWire.expectedCurrentAmps || 10,
+          signalName: 'GND_RETURN',
+          signalType: 'Ground',
+          networkBus: 'GROUND_CHASSIS',
+          subsystem: 'נקודות הארקת שלדה (Ground Chassis)',
+          notes: 'Dedicated ground return lead',
+        };
+        currentWires.push(gndWire);
       }
 
       if (v.nodeId) {

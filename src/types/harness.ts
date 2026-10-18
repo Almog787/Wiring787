@@ -132,11 +132,23 @@ export interface SafetySolution {
   id: string;
   title: string;
   description: string;
-  actionType: 'upsize_wire' | 'adjust_fuse' | 'upgrade_terminal' | 'derate_load';
+  actionType:
+    | 'upsize_wire'
+    | 'adjust_fuse'
+    | 'upgrade_terminal'
+    | 'derate_load'
+    | 'configure_termination'
+    | 'pair_twisted'
+    | 'reassign_pin'
+    | 'add_ground';
   newAwg?: number;
   newFuseAmps?: number;
   newTerminalId?: string;
   newExpectedCurrent?: number;
+  newTerminationResistor?: string;
+  newTwistedPairId?: string;
+  newPin?: string;
+  newWire?: Partial<WireConnection>;
 }
 
 export interface SafetyCheckViolation {

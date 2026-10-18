@@ -52,29 +52,39 @@ export const ComponentPinoutModal: React.FC<ComponentPinoutModalProps> = ({
     (w) => w.fromNodeId === node.id || w.toNodeId === node.id
   );
 
-  // Group by pin
-  const pinRows = (node.pins && node.pins.length > 0
-    ? node.pins
-    : [
-        { pin: '30', label: 'Feed 12V', description: 'הזנת כוח ראשית', isPower: true },
-        { pin: '87', label: 'NO Output', description: 'מגע עבודה פתוח', isPower: true },
-        { pin: '86', label: 'Coil (+)', description: 'פיקוד חיובי לממסר', isPower: false },
-        { pin: '85', label: 'Coil (-)', description: 'הארקת סליל פיקוד', isPower: false },
-      ]
-  ).map((p) => {
-    // Check if any wire connects to this pin
-    const wireOut = connectedWires.find((w) => w.fromNodeId === node.id && w.fromPin === p.pin);
-    const wireIn = connectedWires.find((w) => w.toNodeId === node.id && w.toPin === p.pin);
-    const activeWire = wireOut || wireIn;
-    const isSource = Boolean(wireOut);
+  // Collect all unique pins from predefined node pins + actual connected wires
+  const pinMetaMap = new Map<string, { label: string; description?: string; isPower?: boolean }>();
+  if (node.pins && node.pins.length > 0) {
+    node.pins.forEach((p) => {
+      pinMetaMap.set(p.pin, { label: p.label || p.pin, description: p.description, isPower: p.isPower });
+    });
+  }
+
+  // Also include any pin referenced by connected wires
+  connectedWires.forEach((w) => {
+    if (w.fromNodeId === node.id && !pinMetaMap.has(w.fromPin)) {
+      pinMetaMap.set(w.fromPin, { label: `פין ${w.fromPin}`, description: w.signalName });
+    }
+    if (w.toNodeId === node.id && !pinMetaMap.has(w.toPin)) {
+      pinMetaMap.set(w.toPin, { label: `פין ${w.toPin}`, description: w.signalName });
+    }
+  });
+
+  // Build pinRows supporting multiple incoming/outgoing wires per pin
+  const pinRows = Array.from(pinMetaMap.entries()).map(([pinId, meta]) => {
+    const wiresOut = connectedWires.filter((w) => w.fromNodeId === node.id && w.fromPin === pinId);
+    const wiresIn = connectedWires.filter((w) => w.toNodeId === node.id && w.toPin === pinId);
+    const wireEntries = [
+      ...wiresOut.map((w) => ({ wire: w, isSource: true })),
+      ...wiresIn.map((w) => ({ wire: w, isSource: false })),
+    ];
 
     return {
-      pin: p.pin,
-      label: p.label || p.pin,
-      description: p.description,
-      isPower: p.isPower,
-      activeWire,
-      isSource,
+      pin: pinId,
+      label: meta.label,
+      description: meta.description,
+      isPower: meta.isPower || wireEntries.some((e) => e.wire.signalType === 'Power'),
+      wireEntries,
     };
   });
 
@@ -191,34 +201,64 @@ export const ComponentPinoutModal: React.FC<ComponentPinoutModalProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono">
                 {pinRows.map((row) => {
-                  const wire = row.activeWire;
-                  const isAssembled = wire ? assembledWireIds.has(wire.id) : false;
+                  const hasWires = row.wireEntries.length > 0;
+                  const allAssembled = hasWires && row.wireEntries.every((e) => assembledWireIds.has(e.wire.id));
 
-                  return (
-                    <tr
-                      key={row.pin}
-                      className={`hover:bg-slate-900/60 transition-colors ${
-                        isAssembled ? 'bg-emerald-950/10' : ''
-                      }`}
-                    >
-                      {/* Pin ID */}
-                      <td className="py-2.5 px-3 font-bold text-amber-400 whitespace-nowrap">
-                        <span className="px-2 py-0.5 bg-slate-900 border border-slate-700 rounded">
-                          {row.pin}
-                        </span>
-                      </td>
+                  if (!hasWires) {
+                    return (
+                      <tr key={row.pin} className="hover:bg-slate-900/40 transition-colors opacity-70">
+                        <td className="py-2.5 px-3 font-bold text-amber-400/80 whitespace-nowrap">
+                          <span className="px-2 py-0.5 bg-slate-900 border border-slate-700 rounded">
+                            {row.pin}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-300 font-sans">
+                          <div>{row.label}</div>
+                          {row.description && <div className="text-[10px] text-slate-500">{row.description}</div>}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-600 italic">לא מחובר (פנוי)</td>
+                        <td className="py-2.5 px-3 text-slate-600">—</td>
+                        <td className="py-2.5 px-3 text-slate-600">—</td>
+                        <td className="py-2.5 px-3 text-slate-600">—</td>
+                        <td className="py-2.5 px-3 text-slate-600">—</td>
+                        <td className="py-2.5 px-3 text-center text-slate-600">—</td>
+                      </tr>
+                    );
+                  }
 
-                      {/* Pin Label */}
-                      <td className="py-2.5 px-3 text-slate-200 font-sans">
-                        <div>{row.label}</div>
-                        {row.description && (
-                          <div className="text-[10px] text-slate-500 font-sans">{row.description}</div>
-                        )}
-                      </td>
+                  return row.wireEntries.map((entry, entryIdx) => {
+                    const wire = entry.wire;
+                    const isAssembled = assembledWireIds.has(wire.id);
 
-                      {/* Wire ID */}
-                      <td className="py-2.5 px-3">
-                        {wire ? (
+                    return (
+                      <tr
+                        key={`${row.pin}-${wire.id}-${entryIdx}`}
+                        className={`hover:bg-slate-900/60 transition-colors ${
+                          isAssembled ? 'bg-emerald-950/15' : ''
+                        }`}
+                      >
+                        {/* Pin ID */}
+                        <td className="py-2.5 px-3 font-bold text-amber-400 whitespace-nowrap">
+                          <span className="px-2 py-0.5 bg-slate-900 border border-slate-700 rounded">
+                            {row.pin}
+                          </span>
+                          {row.wireEntries.length > 1 && (
+                            <span className="mr-1 text-[9px] px-1 py-0.2 bg-purple-950 text-purple-300 border border-purple-700/50 rounded">
+                              פין משותף ({entryIdx + 1}/{row.wireEntries.length})
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Pin Label */}
+                        <td className="py-2.5 px-3 text-slate-200 font-sans">
+                          <div>{row.label}</div>
+                          {row.description && (
+                            <div className="text-[10px] text-slate-500 font-sans">{row.description}</div>
+                          )}
+                        </td>
+
+                        {/* Wire ID */}
+                        <td className="py-2.5 px-3">
                           <button
                             onClick={() => {
                               onSelectWireForFocus(wire.id);
@@ -229,16 +269,12 @@ export const ComponentPinoutModal: React.FC<ComponentPinoutModalProps> = ({
                           >
                             {wire.wireNumber || wire.id}
                           </button>
-                        ) : (
-                          <span className="text-slate-600">לא מחובר</span>
-                        )}
-                      </td>
+                        </td>
 
-                      {/* Direction and Origin / Destination */}
-                      <td className="py-2.5 px-3 font-sans">
-                        {wire ? (
+                        {/* Direction and Origin / Destination */}
+                        <td className="py-2.5 px-3 font-sans">
                           <div className="flex items-center gap-1.5 text-slate-300">
-                            {row.isSource ? (
+                            {entry.isSource ? (
                               <>
                                 <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 px-1 rounded">מוצא ➔</span>
                                 <span className="font-semibold">{wire.toNodeId}</span>
@@ -252,14 +288,10 @@ export const ComponentPinoutModal: React.FC<ComponentPinoutModalProps> = ({
                               </>
                             )}
                           </div>
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
+                        </td>
 
-                      {/* Gauge & Color */}
-                      <td className="py-2.5 px-3">
-                        {wire ? (
+                        {/* Gauge & Color */}
+                        <td className="py-2.5 px-3">
                           <div className="flex items-center gap-2">
                             <span
                               className="w-3.5 h-3.5 rounded-full border border-slate-600 shadow-xs shrink-0"
@@ -269,40 +301,28 @@ export const ComponentPinoutModal: React.FC<ComponentPinoutModalProps> = ({
                             <span className="text-slate-200">{wire.gaugeAwg} AWG</span>
                             <span className="text-slate-400 text-[10px]">({wire.colorName || wire.color})</span>
                           </div>
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
+                        </td>
 
-                      {/* Current & Fuse */}
-                      <td className="py-2.5 px-3 text-slate-300">
-                        {wire ? (
+                        {/* Current & Fuse */}
+                        <td className="py-2.5 px-3 text-slate-300">
                           <div>
                             <span>{wire.expectedCurrentAmps}A</span>
                             {wire.fuseRatingA ? (
                               <span className="text-slate-500 text-[10px]"> (פיוז: {wire.fuseRatingA}A)</span>
                             ) : null}
                           </div>
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
+                        </td>
 
-                      {/* Terminal & Tool */}
-                      <td className="py-2.5 px-3 font-sans text-[11px] text-slate-400">
-                        {wire ? (
+                        {/* Terminal & Tool */}
+                        <td className="py-2.5 px-3 font-sans text-[11px] text-slate-400">
                           <div>
                             <div className="text-slate-300">Faston 6.3mm OB</div>
                             <div className="text-[10px] text-amber-400/90">כלי: SN-48B / B-Crimp</div>
                           </div>
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
+                        </td>
 
-                      {/* Assembly Checkbox */}
-                      <td className="py-2.5 px-3 text-center">
-                        {wire ? (
+                        {/* Assembly Checkbox */}
+                        <td className="py-2.5 px-3 text-center">
                           <button
                             onClick={() => onToggleWireAssembled(wire.id)}
                             className={`px-3 py-1 rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1 mx-auto ${
@@ -311,15 +331,13 @@ export const ComponentPinoutModal: React.FC<ComponentPinoutModalProps> = ({
                                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
                             }`}
                           >
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>{isAssembled ? 'הורכב ✓' : 'סמן כהורכב'}</span>
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>{isAssembled ? 'הורכב ✓' : 'סמן'}</span>
                           </button>
-                        ) : (
-                          <span className="text-slate-600">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
+                        </td>
+                      </tr>
+                    );
+                  });
                 })}
               </tbody>
             </table>

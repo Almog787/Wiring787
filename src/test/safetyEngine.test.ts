@@ -261,4 +261,180 @@ describe('HarnessMap Pro Safety Engine & Electrical Physics', () => {
       expect(categories.has('Tooling')).toBe(true);
     });
   });
+
+  describe('CAN Bus & Network Physical Layer Logic (ISO 11898-2)', () => {
+    it('detects missing CAN termination resistors when 0 terminations are defined', () => {
+      const nodes: CircuitNode[] = [
+        { id: 'ecu', name: 'ECU', type: 'module_electronic', category: 'module', position: { x: 0, y: 0 }, voltageV: 12 },
+        { id: 'tcu', name: 'TCU', type: 'module_electronic', category: 'module', position: { x: 100, y: 0 }, voltageV: 12 },
+      ];
+      const wires: WireConnection[] = [
+        {
+          id: 'can-h',
+          fromNodeId: 'ecu',
+          fromPin: 'H',
+          toNodeId: 'tcu',
+          toPin: 'H',
+          gaugeAwg: 22,
+          color: '#FFFF00',
+          colorName: 'Yellow',
+          lengthMm: 1000,
+          fromTerminalId: 'FAST-63-OB-14-18',
+          toTerminalId: 'FAST-63-OB-14-18',
+          expectedCurrentAmps: 1,
+          networkBus: 'CAN_TEST',
+          signalName: 'CAN_HIGH',
+          terminationResistor: 'NONE', // 0 terminations!
+          twistedPairId: 'TP-01',
+        },
+      ];
+
+      const violations = runSafetyChecks(nodes, wires, 12);
+      const canZero = violations.find((v) => v.id.includes('can-term-zero'));
+      expect(canZero).toBeDefined();
+      expect(canZero?.level).toBe('critical');
+      expect(canZero?.solutions.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('detects differential CAN lines without twisted pair (EMI hazard)', () => {
+      const nodes: CircuitNode[] = [
+        { id: 'node-a', name: 'Node A', type: 'module_electronic', category: 'module', position: { x: 0, y: 0 }, voltageV: 12 },
+        { id: 'node-b', name: 'Node B', type: 'module_electronic', category: 'module', position: { x: 100, y: 0 }, voltageV: 12 },
+      ];
+      const wires: WireConnection[] = [
+        {
+          id: 'can-unpaired',
+          fromNodeId: 'node-a',
+          fromPin: 'CAN_H',
+          toNodeId: 'node-b',
+          toPin: 'CAN_H',
+          gaugeAwg: 22,
+          color: '#FFFF00',
+          colorName: 'Yellow',
+          lengthMm: 1000,
+          fromTerminalId: 'FAST-63-OB-14-18',
+          toTerminalId: 'FAST-63-OB-14-18',
+          expectedCurrentAmps: 1,
+          networkBus: 'CAN0_POWERTRAIN',
+          signalName: 'CAN_HIGH',
+          terminationResistor: '120 Ohm',
+          twistedPairId: 'NONE', // Untwisted differential signal!
+        },
+      ];
+
+      const violations = runSafetyChecks(nodes, wires, 12);
+      const untwisted = violations.find((v) => v.id.includes('diff-not-twisted'));
+      expect(untwisted).toBeDefined();
+      expect(untwisted?.solutions.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('Circuit Dead-Short and Missing Ground Return Logic', () => {
+    it('flags CRITICAL dead short when +12V power and chassis ground share the exact same pin', () => {
+      const nodes: CircuitNode[] = [
+        { id: 'box', name: 'Junction Box', type: 'module_electronic', category: 'module', position: { x: 0, y: 0 }, voltageV: 12 },
+      ];
+      const wires: WireConnection[] = [
+        {
+          id: 'w-pwr',
+          fromNodeId: 'bat',
+          fromPin: '+',
+          toNodeId: 'box',
+          toPin: 'PIN-1',
+          gaugeAwg: 14,
+          color: '#FF0000',
+          colorName: 'Red',
+          lengthMm: 1000,
+          fromTerminalId: 'FAST-63-OB-14-18',
+          toTerminalId: 'FAST-63-OB-14-18',
+          expectedCurrentAmps: 15,
+          signalType: 'Power',
+        },
+        {
+          id: 'w-gnd',
+          fromNodeId: 'gnd-chassis',
+          fromPin: 'GND',
+          toNodeId: 'box',
+          toPin: 'PIN-1', // Dead short: Ground on PIN-1 as well!
+          gaugeAwg: 14,
+          color: '#000000',
+          colorName: 'Black',
+          lengthMm: 1000,
+          fromTerminalId: 'FAST-63-OB-14-18',
+          toTerminalId: 'FAST-63-OB-14-18',
+          expectedCurrentAmps: 15,
+          signalType: 'Ground',
+        },
+      ];
+
+      const violations = runSafetyChecks(nodes, wires, 12);
+      const deadShort = violations.find((v) => v.id.includes('dead-short'));
+      expect(deadShort).toBeDefined();
+      expect(deadShort?.level).toBe('critical');
+      expect(deadShort?.solutions.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('flags CRITICAL incomplete circuit when a powered module has no ground return lead', () => {
+      const nodes: CircuitNode[] = [
+        { id: 'radar', name: 'Forward Radar', type: 'module_electronic', category: 'load', position: { x: 0, y: 0 }, voltageV: 12 },
+      ];
+      const wires: WireConnection[] = [
+        {
+          id: 'w-radar-pwr',
+          fromNodeId: 'fuse-box',
+          fromPin: 'F-01',
+          toNodeId: 'radar',
+          toPin: 'VCC',
+          gaugeAwg: 18,
+          color: '#FF0000',
+          colorName: 'Red',
+          lengthMm: 1000,
+          fromTerminalId: 'FAST-63-OB-14-18',
+          toTerminalId: 'FAST-63-OB-14-18',
+          expectedCurrentAmps: 5,
+          signalType: 'Power',
+        },
+      ];
+
+      const violations = runSafetyChecks(nodes, wires, 12);
+      const missingGround = violations.find((v) => v.id.includes('missing-ground-radar'));
+      expect(missingGround).toBeDefined();
+      expect(missingGround?.level).toBe('critical');
+      expect(missingGround?.solutions.length).toBeGreaterThanOrEqual(2);
+      expect(missingGround?.solutions[0].actionType).toBe('add_ground');
+    });
+
+    it('verifies that EVERY violation across all check categories offers AT LEAST 2 technical solutions', () => {
+      const nodes: CircuitNode[] = [
+        { id: 'load-1', name: 'High Load', type: 'module_electronic', category: 'load', position: { x: 0, y: 0 }, voltageV: 12 },
+      ];
+      const wires: WireConnection[] = [
+        {
+          id: 'w-overload',
+          fromNodeId: 'bat',
+          fromPin: '+',
+          toNodeId: 'load-1',
+          toPin: 'PWR',
+          gaugeAwg: 22, // 22 AWG carrying 40A -> severe overload!
+          color: '#FF0000',
+          colorName: 'Red',
+          lengthMm: 2000,
+          fromTerminalId: 'FAST-63-OB-14-18',
+          toTerminalId: 'FAST-63-OB-14-18',
+          expectedCurrentAmps: 40,
+          fuseRatingA: 20, // fuse lower than current -> blow hazard!
+          signalType: 'Power',
+        },
+      ];
+
+      const violations = runSafetyChecks(nodes, wires, 12);
+      expect(violations.length).toBeGreaterThan(0);
+      for (const v of violations) {
+        expect(v.solutions).toBeDefined();
+        expect(v.solutions.length).toBeGreaterThanOrEqual(2);
+        expect(v.solutions[0].id).toBeTruthy();
+        expect(v.solutions[1].id).toBeTruthy();
+      }
+    });
+  });
 });
