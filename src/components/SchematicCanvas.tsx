@@ -43,6 +43,12 @@ import {
   CheckCircle,
   ExternalLink,
   HelpCircle,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  RotateCcw,
+  Move,
+  GripVertical,
 } from 'lucide-react';
 import { InspectableModel } from './ThreeWorkbench';
 import { ComponentPinoutModal } from './ComponentPinoutModal';
@@ -78,6 +84,21 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   onApplyAllFixes,
   onExportCorrectedCSV,
 }) => {
+  // Dynamic Canvas Controls (Zoom, Pan & Interactive Positioning)
+  const [zoom, setZoom] = useState<number>(1.0);
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState<boolean>(false);
+  const [panStart, setPanStart] = useState<{ mouseX: number; mouseY: number; startPanX: number; startPanY: number } | null>(null);
+
+  // Dynamic Component Card Dragging ("אפשר לגרור את התצוגות שיהיה נוח")
+  const [customPositions, setCustomPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  const [nodeDragStart, setNodeDragStart] = useState<{ mouseX: number; mouseY: number; nodeX: number; nodeY: number } | null>(null);
+
+  // Wire Layer Visibility ("שלא יוצגו מאחורי התיבות")
+  const [wireLayerAbove, setWireLayerAbove] = useState<boolean>(true);
+
+  // Selection & UI States
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
   const [hoveredWireId, setHoveredWireId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -262,24 +283,155 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     return { nodePositionMap: map, canvasWidth: w, canvasHeight: h };
   }, [nodes, subsystems]);
 
-  // Precise Pin Anchor Port Calculation
-  // Calculates the exact (x, y) coordinates of each pin socket on a node's border
-  const getPinPortCoord = (nodeId: string, pinId: string, isFromNode: boolean): { x: number; y: number } => {
-    const pos = nodePositionMap.get(nodeId) || { x: 50, y: 50 };
+  const CARD_WIDTH = 288;
+
+  // Resolve current position of a node (custom dragged position or automatic grid column layout)
+  const getNodePos = (nodeId: string): { x: number; y: number } => {
+    if (customPositions[nodeId]) {
+      return customPositions[nodeId];
+    }
+    return nodePositionMap.get(nodeId) || { x: 50, y: 50 };
+  };
+
+  // Precise Pin Anchor Port Calculation with Dynamic Edge Facing
+  // Determines exact physical terminal anchor coordinates on the component boundary
+  // Dynamically selects the facing edge (left or right) so wires never cut through or get lost behind cards!
+  const getPinPortCoord = (
+    nodeId: string,
+    pinId: string,
+    otherNodeId?: string,
+    isFromNode = true
+  ): { x: number; y: number; exitSide: 'left' | 'right' } => {
+    const pos = getNodePos(nodeId);
+    const otherPos = otherNodeId ? getNodePos(otherNodeId) : null;
     const node = nodes.find((n) => n.id === nodeId);
     const pins = node?.pins || [];
     const pinIndex = pins.findIndex((p) => p.pin === pinId);
-    const cardWidth = 280;
-
-    // Pin sockets along left edge (for inputs) and right edge (for outputs)
     const pinYOffset = pinIndex >= 0 ? 80 + (pinIndex % 8) * 22 : 90;
 
-    if (isFromNode) {
-      // Source pin connects from the right edge
-      return { x: pos.x + cardWidth, y: pos.y + pinYOffset };
-    } else {
-      // Destination pin connects into the left edge
-      return { x: pos.x, y: pos.y + pinYOffset };
+    let exitOnRight = isFromNode;
+    if (otherPos) {
+      if (isFromNode) {
+        exitOnRight = otherPos.x >= pos.x;
+      } else {
+        exitOnRight = otherPos.x > pos.x ? false : true;
+      }
+    }
+
+    return {
+      x: exitOnRight ? pos.x + CARD_WIDTH : pos.x,
+      y: pos.y + pinYOffset,
+      exitSide: exitOnRight ? 'right' : 'left',
+    };
+  };
+
+  // Dynamic Canvas Control Handlers (Zoom, Pan, Fit & Reset Layout)
+  const handleZoomIn = () => setZoom((prev) => Math.min(2.5, Number((prev + 0.15).toFixed(2))));
+  const handleZoomOut = () => setZoom((prev) => Math.max(0.35, Number((prev - 0.15).toFixed(2))));
+  const handleResetZoom = () => {
+    setZoom(1.0);
+    setPan({ x: 0, y: 0 });
+  };
+  const handleResetLayout = () => {
+    setCustomPositions({});
+    setZoom(1.0);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const handleFitView = () => {
+    if (nodes.length === 0) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const n of visibleNodes) {
+      const p = getNodePos(n.id);
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x + CARD_WIDTH > maxX) maxX = p.x + CARD_WIDTH;
+      if (p.y + 320 > maxY) maxY = p.y + 320;
+    }
+
+    const margin = 80;
+    const contentW = maxX - minX + margin * 2;
+    const contentH = maxY - minY + margin * 2;
+    const viewW = window.innerWidth * 0.55;
+    const viewH = window.innerHeight * 0.7;
+    const scale = Math.min(1.2, Math.max(0.4, Math.min(viewW / contentW, viewH / contentH)));
+
+    setZoom(Number(scale.toFixed(2)));
+    setPan({
+      x: Math.round(-minX * scale + margin),
+      y: Math.round(-minY * scale + margin),
+    });
+  };
+
+  // Node Drag Handler (Initiate dragging for a component card)
+  const handleStartNodeDrag = (nodeId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const pos = getNodePos(nodeId);
+    setDraggedNodeId(nodeId);
+    setSelectedNodeId(nodeId);
+    setNodeDragStart({
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      nodeX: pos.x,
+      nodeY: pos.y,
+    });
+  };
+
+  // Canvas Mouse Listeners (Panning and Node Dragging)
+  const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('.component-card') || (e.target as HTMLElement).closest('button')) {
+      return;
+    }
+    setIsPanning(true);
+    setPanStart({
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      startPanX: pan.x,
+      startPanY: pan.y,
+    });
+  };
+
+  const handleContainerMouseMove = (e: React.MouseEvent) => {
+    if (draggedNodeId && nodeDragStart) {
+      const deltaX = (e.clientX - nodeDragStart.mouseX) / zoom;
+      const deltaY = (e.clientY - nodeDragStart.mouseY) / zoom;
+      const nextX = Math.max(10, Math.round(nodeDragStart.nodeX + deltaX));
+      const nextY = Math.max(10, Math.round(nodeDragStart.nodeY + deltaY));
+
+      setCustomPositions((prev) => ({
+        ...prev,
+        [draggedNodeId]: { x: nextX, y: nextY },
+      }));
+    } else if (isPanning && panStart) {
+      const deltaX = e.clientX - panStart.mouseX;
+      const deltaY = e.clientY - panStart.mouseY;
+      setPan({
+        x: panStart.startPanX + deltaX,
+        y: panStart.startPanY + deltaY,
+      });
+    }
+  };
+
+  const handleContainerMouseUp = () => {
+    if (draggedNodeId) {
+      setDraggedNodeId(null);
+      setNodeDragStart(null);
+    }
+    if (isPanning) {
+      setIsPanning(false);
+      setPanStart(null);
+    }
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      e.preventDefault();
+      const delta = -e.deltaY * 0.002;
+      setZoom((prev) => Math.min(2.5, Math.max(0.35, Number((prev + delta).toFixed(2)))));
     }
   };
 
@@ -513,12 +665,90 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
       </div>
 
       {/* =========================================================================
-          Main SVG Schematic Canvas Area
+          Main SVG Schematic Canvas Area with Dynamic Pan, Zoom & Dragging
           ========================================================================= */}
-      <div className="relative flex-1 overflow-auto bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:28px_28px] p-8 text-left" dir="ltr">
+      <div
+        className="relative flex-1 overflow-hidden bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:28px_28px] text-left select-none"
+        dir="ltr"
+        onMouseDown={handleCanvasMouseDown}
+        onMouseMove={handleContainerMouseMove}
+        onMouseUp={handleContainerMouseUp}
+        onMouseLeave={handleContainerMouseUp}
+        onWheel={handleWheel}
+        style={{
+          cursor: isPanning ? 'grabbing' : draggedNodeId ? 'grabbing' : 'default',
+        }}
+      >
+        {/* Dynamic Canvas Control Toolbar ("שליטה דינמית בתצוגה") */}
+        <div className="absolute top-4 right-4 z-40 flex items-center gap-2 bg-slate-900/90 backdrop-blur-md border border-slate-800 p-1.5 rounded-xl shadow-xl text-xs" dir="rtl">
+          <div className="flex items-center gap-1 border-l border-slate-800 pl-2">
+            <button
+              onClick={handleZoomIn}
+              className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+              title="הגדל תצוגה (+15%)"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleResetZoom}
+              className="px-2 py-1 text-[11px] font-mono font-bold text-amber-400 hover:bg-slate-800 rounded-md transition-colors"
+              title="איפוס ל-100%"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              onClick={handleZoomOut}
+              className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+              title="הקטן תצוגה (-15%)"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 border-l border-slate-800 pl-2">
+            <button
+              onClick={handleFitView}
+              className="flex items-center gap-1 px-2 py-1 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors text-[11px]"
+              title="התאם את כל הרכיבים לחלון"
+            >
+              <Maximize2 className="w-3.5 h-3.5 text-sky-400" />
+              <span>התאם</span>
+            </button>
+            <button
+              onClick={handleResetLayout}
+              className="flex items-center gap-1 px-2 py-1 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors text-[11px]"
+              title="איפוס מיקומי הרכיבים לפריסת עמודות אוטומטית"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-emerald-400" />
+              <span>סדר מחדש</span>
+            </button>
+          </div>
+
+          <button
+            onClick={() => setWireLayerAbove(!wireLayerAbove)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-colors text-[11px] font-medium ${
+              wireLayerAbove
+                ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+            title="שינוי סדר שכבות: מוליכים מעל התיבות או מתחת לתיבות"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>{wireLayerAbove ? 'מוליכים מעל התיבות' : 'מוליכים מאחורי התיבות'}</span>
+          </button>
+        </div>
+
+        {/* Floating Instruction Pill */}
+        <div className="absolute bottom-4 right-4 z-40 bg-slate-950/80 backdrop-blur-sm border border-slate-800/80 px-3 py-1.5 rounded-lg text-[11px] text-slate-400 font-sans pointer-events-none flex items-center gap-2" dir="rtl">
+          <Move className="w-3.5 h-3.5 text-amber-400" />
+          <span>גרור כותרת רכיב להזזה · גרור רקע להזזת תצוגה · גלגלת לזום</span>
+        </div>
+
+        {/* Scaled & Translated Canvas Content Board */}
         <div
-          className="relative mx-auto"
+          className="relative origin-top-left transition-transform duration-75"
           style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             minWidth: `${canvasWidth}px`,
             minHeight: `${canvasHeight}px`,
           }}
@@ -539,7 +769,12 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
           </div>
 
           {/* SVG Connection Wires with Pin-to-Pin Anchoring */}
-          <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ minWidth: `${canvasWidth}px`, minHeight: `${canvasHeight}px` }}>
+          <svg
+            className={`absolute inset-0 w-full h-full pointer-events-none ${
+              wireLayerAbove ? 'z-20' : 'z-0'
+            }`}
+            style={{ minWidth: `${canvasWidth}px`, minHeight: `${canvasHeight}px` }}
+          >
             <defs>
               <filter id="glow-focused" x="-30%" y="-30%" width="160%" height="160%">
                 <feGaussianBlur stdDeviation="4" result="blur" />
@@ -549,19 +784,19 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 
             {visibleWires.map((wire, idx) => {
               // Calculate exact source and destination pin socket positions!
-              const p1 = getPinPortCoord(wire.fromNodeId, wire.fromPin, true);
-              const p2 = getPinPortCoord(wire.toNodeId, wire.toPin, false);
+              const p1 = getPinPortCoord(wire.fromNodeId, wire.fromPin, wire.toNodeId, true);
+              const p2 = getPinPortCoord(wire.toNodeId, wire.toPin, wire.fromNodeId, false);
 
               const x1 = p1.x;
               const y1 = p1.y;
               const x2 = p2.x;
               const y2 = p2.y;
 
-              // Curvature control points
+              // Curvature control points with dynamic facing edges
               const dx = Math.abs(x2 - x1);
-              const cx1 = x1 + Math.max(60, dx * 0.4);
+              const cx1 = x1 + (p1.exitSide === 'right' ? Math.max(50, dx * 0.45) : -Math.max(50, dx * 0.45));
+              const cx2 = x2 + (p2.exitSide === 'right' ? Math.max(50, dx * 0.45) : -Math.max(50, dx * 0.45));
               const cy1 = y1;
-              const cx2 = x2 - Math.max(60, dx * 0.4);
               const cy2 = y2;
 
               const isHazardWire = violations.some((v) => v.wireId === wire.id && v.level === 'critical');
@@ -636,36 +871,47 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
             const isRelay = node.category === 'relay' || node.type.includes('relay');
             const isFuse = node.category === 'protection' || node.type.includes('fuse');
             const isSelected = selectedNodeId === node.id;
+            const isDraggingThis = draggedNodeId === node.id;
             const hasNodeViolation = violations.some((v) => v.nodeId === node.id);
 
             // Wires connected to this node
             const nodeWires = wires.filter((w) => w.fromNodeId === node.id || w.toNodeId === node.id);
             const isNodeInFocus = selectedWire && (selectedWire.fromNodeId === node.id || selectedWire.toNodeId === node.id);
+            const pos = getNodePos(node.id);
 
             return (
               <div
                 key={node.id}
                 onClick={() => setSelectedNodeId(node.id)}
-                className={`absolute w-72 rounded-2xl border-2 transition-all shadow-2xl ${
-                  isNodeInFocus
+                className={`component-card absolute w-72 rounded-2xl border-2 transition-shadow shadow-2xl ${
+                  isDraggingThis
+                    ? 'border-amber-400 bg-slate-900/98 ring-4 ring-amber-500/40 z-30 shadow-amber-500/20 scale-[1.02] cursor-grabbing'
+                    : isNodeInFocus
                     ? 'border-amber-400 bg-slate-900/95 ring-4 ring-amber-500/25 z-10'
                     : isSelected
                     ? 'border-sky-400 bg-slate-900/95 ring-2 ring-sky-500/20 z-10'
                     : hasNodeViolation
-                    ? 'border-red-500/80 bg-slate-900/90'
-                    : 'border-slate-800 bg-slate-900/90 hover:border-slate-600'
+                    ? 'border-red-500/80 bg-slate-900/90 z-10'
+                    : 'border-slate-800 bg-slate-900/90 hover:border-slate-600 z-10'
                 }`}
                 style={{
-                  left: `${nodePositionMap.get(node.id)?.x || 50}px`,
-                  top: `${nodePositionMap.get(node.id)?.y || 50}px`,
+                  left: `${pos.x}px`,
+                  top: `${pos.y}px`,
                 }}
               >
-                {/* Component Header */}
-                <div className="p-3 border-b border-slate-800 bg-slate-950/60 rounded-t-2xl">
+                {/* Component Header with Designated Drag Handle */}
+                <div
+                  onMouseDown={(e) => handleStartNodeDrag(node.id, e)}
+                  className="p-3 border-b border-slate-800 bg-slate-950/70 rounded-t-2xl cursor-grab active:cursor-grabbing hover:bg-slate-950/90 transition-colors select-none"
+                  title="גרור כדי להזיז את הרכיב בחלל הסרטוט"
+                >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-bold text-white truncate max-w-[170px]" title={node.name}>
-                      {node.name}
-                    </span>
+                    <div className="flex items-center gap-1.5 truncate max-w-[170px]">
+                      <GripVertical className="w-3.5 h-3.5 text-slate-500 hover:text-amber-400 shrink-0 cursor-grab" />
+                      <span className="text-xs font-bold text-white truncate" title={node.name}>
+                        {node.name}
+                      </span>
+                    </div>
                     {node.ratingAmps && (
                       <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                         {node.fuseRatingAmps ? `${node.fuseRatingAmps}A Fuse` : `${node.ratingAmps}A`}
@@ -675,7 +921,6 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 
                   <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
                     <span className="truncate">{node.id}</span>
-                    <span className="text-sky-400 font-sans">{node.subsystem?.split('(')[0]}</span>
                   </div>
                 </div>
 
